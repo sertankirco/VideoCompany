@@ -28,7 +28,9 @@ from src.ae_bridge import (
     get_aerender_path,
     run_render,
 )
+from src.data_simulator import generate_hook_text
 from src.sfx_sync import analyze_sfx_library, get_sfx_lead_frames
+from src.sound_designer import SoundDesigner
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +212,8 @@ class EngineConfig:
     comp_name: str = DEFAULT_COMP_NAME
     fps: int = VIDEO_FPS
     duration_sec: int = DEFAULT_DURATION_SEC
+    ffmpeg_bin: str = "ffmpeg"         # FFmpeg binary yolu
+    enable_sound_design: bool = True   # FFmpeg SFX miksajı aktif/pasif
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +239,15 @@ class RenderEngine:
         self._job_queue: queue.Queue[RenderJob] = queue.Queue()
         self._running = False
         self._worker: threading.Thread | None = None
+        self._sound_designer: SoundDesigner | None = (
+            SoundDesigner(
+                assets_dir=config.assets_dir,
+                fps=config.fps,
+                ffmpeg_bin=config.ffmpeg_bin,
+            )
+            if config.enable_sound_design
+            else None
+        )
 
     def _discover_sfx(self) -> list[str]:
         """assets_dir içindeki ses dosyalarını listeler."""
@@ -282,26 +295,40 @@ class RenderEngine:
         text_updates = build_text_updates(event)
         logger.debug("Text updates: %s", text_updates)
 
-        # 2. JSX oluştur (Motion Blur 360° dahil)
+        # 2. Hook metni üret ve HOOK_TEXT katmanına ekle (Growlabs Anayasası)
+        hook_text = generate_hook_text(match_data if isinstance(match_data, dict) else {
+            "event_type": event.event_type,
+            "player_name": event.player_name,
+            "team_home": event.team_home,
+            "team_away": event.team_away,
+            "team": event.team,
+            "score_home": event.score_home,
+            "score_away": event.score_away,
+            "minute": event.minute,
+        })
+        text_updates.append({"layer": "HOOK_TEXT", "text": hook_text})
+        logger.info("Hook text: %s", hook_text.replace("\n", " | "))
+
+        # 3. JSX oluştur (Motion Blur 360° dahil)
         jsx_content = generate_jsx(
             project_path=str(Path(self.config.template_path).resolve()),
             comp_name=self.config.comp_name,
             text_updates=text_updates,
         )
 
-        # 3. JSX çalıştır → .aep güncelle
+        # 4. JSX çalıştır → .aep güncelle
         execute_jsx(jsx_content)
 
-        # 4. Kesim planı + SFX senkronizasyonu
+        # 5. Kesim planı + SFX senkronizasyonu
         total_frames = self.config.duration_sec * self.config.fps
         cuts = plan_cuts(total_frames, self._sfx_paths, self.config.fps)
         logger.info("Cut plan: %d cut points over %d frames", len(cuts), total_frames)
 
-        # 5. Render manifest kaydet
+        # 6. Render manifest kaydet
         manifest_path = output_path.replace(".mp4", "_manifest.json")
         self._save_manifest(event, cuts, output_path, manifest_path)
 
-        # 6. aerender tetikle
+        # 7. aerender tetikle
         aerender_bin = self.config.aerender_bin or get_aerender_path()
         end_frame = total_frames - 1
         cmd = build_aerender_command(
@@ -317,6 +344,18 @@ class RenderEngine:
 
         if exit_code != 0:
             raise RuntimeError(f"aerender failed with exit code {exit_code}")
+
+        # 8. Frame-accurate SFX miksajı (FFmpeg)
+        if self._sound_designer and cuts:
+            sfx_output = output_path.replace(".mp4", "_final.mp4")
+            mixed = self._sound_designer.mix_sfx_to_video(
+                video_path=output_path,
+                cut_points=cuts,
+                output_path=sfx_output,
+            )
+            if mixed != output_path:
+                output_path = mixed
+                logger.info("Sound design applied → %s", output_path)
 
         logger.info("Render complete: %s", output_path)
         return output_path
