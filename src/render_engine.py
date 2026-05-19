@@ -214,6 +214,7 @@ class EngineConfig:
     duration_sec: int = DEFAULT_DURATION_SEC
     ffmpeg_bin: str = "ffmpeg"         # FFmpeg binary yolu
     enable_sound_design: bool = True   # FFmpeg SFX miksajı aktif/pasif
+    enable_publisher: bool = False     # Sosyal medya yayıncısı aktif/pasif
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,10 @@ class RenderEngine:
             if config.enable_sound_design
             else None
         )
+        self._publisher = None
+        if config.enable_publisher:
+            from src.publisher import PublisherBot
+            self._publisher = PublisherBot(output_dir=config.output_dir)
 
     def _discover_sfx(self) -> list[str]:
         """assets_dir içindeki ses dosyalarını listeler."""
@@ -356,6 +361,21 @@ class RenderEngine:
             if mixed != output_path:
                 output_path = mixed
                 logger.info("Sound design applied → %s", output_path)
+
+        # 9. Publisher entegrasyonu (watchdog dinliyor, sadece event'i kaydet)
+        if self._publisher:
+            event_dict = {
+                "event_type": event.event_type,
+                "player_name": event.player_name,
+                "team_home": event.team_home,
+                "team_away": event.team_away,
+                "team": event.team,
+                "score_home": event.score_home,
+                "score_away": event.score_away,
+                "minute": event.minute,
+                "match_id": event.match_id,
+            }
+            self._publisher.register_event(output_path, event_dict)
 
         logger.info("Render complete: %s", output_path)
         return output_path
