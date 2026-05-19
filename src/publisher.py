@@ -11,11 +11,13 @@ Güvenlik: Tüm token'lar .env dosyasından okunur, kod içinde asla düz metin 
 """
 
 import asyncio
+import json
 import logging
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import aiofiles
 import aiohttp
@@ -28,6 +30,37 @@ from src.data_simulator import generate_hook_text
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retry yardımcısı
+# ---------------------------------------------------------------------------
+
+_RETRY_DELAYS = (2, 4, 8, 16)   # saniye — exponential backoff
+
+
+async def _with_retry(coro_fn: Callable, platform: str, max_attempts: int = 4) -> dict:
+    """
+    Başarısız upload'ları exponential backoff ile yeniden dener.
+
+    Başarı: status != "error" ve status != "exception" ise dur.
+    Kimlik bilgisi eksikliği (skipped) → yeniden deneme yok.
+    """
+    last: dict = {"platform": platform, "status": "error"}
+    for attempt, delay in enumerate((*_RETRY_DELAYS[:max_attempts - 1], None), start=1):
+        last = await coro_fn()
+        if last.get("status") not in ("error", "exception"):
+            return last
+        if last.get("status") == "skipped":
+            return last
+        if delay is None:
+            break
+        logger.warning(
+            "%s upload failed (attempt %d/%d), retrying in %ds…",
+            platform, attempt, max_attempts, delay,
+        )
+        await asyncio.sleep(delay)
+    logger.error("%s upload failed after %d attempts.", platform, max_attempts)
+    return last
 
 # ---------------------------------------------------------------------------
 # Env token'ları
@@ -601,16 +634,25 @@ class PublisherBot:
         async with aiohttp.ClientSession() as session:
             if "instagram" in self.enabled_platforms:
                 caption = self.formatter.format("instagram", event_data)
-                tasks.append(self.instagram.upload_reel(video_path, caption, session))
+                tasks.append(_with_retry(
+                    lambda c=caption: self.instagram.upload_reel(video_path, c, session),
+                    "instagram",
+                ))
 
             if "tiktok" in self.enabled_platforms:
                 caption = self.formatter.format("tiktok", event_data)
-                tasks.append(self.tiktok.upload_video(video_path, caption, session))
+                tasks.append(_with_retry(
+                    lambda c=caption: self.tiktok.upload_video(video_path, c, session),
+                    "tiktok",
+                ))
 
             if "youtube" in self.enabled_platforms:
                 title       = self.formatter.build_youtube_title(event_data)
                 description = self.formatter.format("youtube", event_data)
-                tasks.append(self.youtube.upload_shorts(video_path, title, description, session))
+                tasks.append(_with_retry(
+                    lambda t=title, d=description: self.youtube.upload_shorts(video_path, t, d, session),
+                    "youtube",
+                ))
 
             if not tasks:
                 logger.warning("No platforms enabled. Check PUBLISHER_ENABLED_PLATFORMS.")
@@ -627,7 +669,29 @@ class PublisherBot:
                 output.append(r)
 
         logger.info("Publish complete: %s", output)
+        self._write_log(video_path, output)
         return output
+
+    def _write_log(self, video_path: str, results: list[dict]) -> None:
+        """Yayın sonuçlarını upload_log.json'a ekler."""
+        log_path = Path(self.output_dir) / "upload_log.json"
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "video": str(video_path),
+            "results": results,
+        }
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            existing: list = []
+            if log_path.exists():
+                with open(log_path, encoding="utf-8") as f:
+                    existing = json.load(f)
+            existing.append(entry)
+            with open(log_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+            logger.debug("Upload log updated: %s", log_path)
+        except OSError as exc:
+            logger.warning("Could not write upload log: %s", exc)
 
     def publish_sync(self, video_path: str) -> list[dict]:
         """asyncio.run() sarmalayıcısı — watchdog thread'inden çağrılabilir."""

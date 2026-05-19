@@ -535,3 +535,131 @@ class TestStartWatcher:
             observer = start_watcher(str(tmp_path), mock_bot)
             mock_obs.start.assert_called_once()
             assert observer is mock_obs
+
+
+# ---------------------------------------------------------------------------
+# Retry mekanizması testleri
+# ---------------------------------------------------------------------------
+
+
+class TestRetryMechanism:
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_on_second_attempt(self):
+        from src.publisher import _with_retry
+        call_count = 0
+
+        async def flaky():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                return {"platform": "instagram", "status": "error"}
+            return {"platform": "instagram", "status": "published"}
+
+        with patch("src.publisher.asyncio.sleep", new=AsyncMock()):
+            result = await _with_retry(flaky, "instagram")
+
+        assert result["status"] == "published"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_skipped_not_retried(self):
+        from src.publisher import _with_retry
+        call_count = 0
+
+        async def skipped():
+            nonlocal call_count
+            call_count += 1
+            return {"platform": "instagram", "status": "skipped"}
+
+        result = await _with_retry(skipped, "instagram")
+        assert result["status"] == "skipped"
+        assert call_count == 1   # skipped → yeniden deneme yok
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_returns_last_error(self):
+        from src.publisher import _with_retry
+
+        async def always_fails():
+            return {"platform": "tiktok", "status": "error", "error": "timeout"}
+
+        with patch("src.publisher.asyncio.sleep", new=AsyncMock()):
+            result = await _with_retry(always_fails, "tiktok", max_attempts=2)
+
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_retry_success_first_try_no_sleep(self):
+        from src.publisher import _with_retry
+
+        async def success():
+            return {"platform": "youtube", "status": "published"}
+
+        with patch("src.publisher.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            result = await _with_retry(success, "youtube")
+
+        assert result["status"] == "published"
+        mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Upload log testleri
+# ---------------------------------------------------------------------------
+
+
+class TestUploadLog:
+    def test_log_file_created_after_publish(self, tmp_path, event_data):
+        from src.publisher import PublisherBot
+        bot = PublisherBot(output_dir=str(tmp_path), enabled_platforms=["instagram"])
+        video = tmp_path / "test_final.mp4"
+        video.write_bytes(b"fake")
+        bot.register_event(str(video), event_data)
+
+        results = [{"platform": "instagram", "status": "published", "id": "123"}]
+        bot._write_log(str(video), results)
+
+        log_path = tmp_path / "upload_log.json"
+        assert log_path.exists()
+
+    def test_log_contains_platform_and_status(self, tmp_path, event_data):
+        from src.publisher import PublisherBot
+        bot = PublisherBot(output_dir=str(tmp_path), enabled_platforms=["instagram"])
+        video = tmp_path / "test_final.mp4"
+        video.write_bytes(b"fake")
+
+        results = [{"platform": "instagram", "status": "published", "id": "abc"}]
+        bot._write_log(str(video), results)
+
+        import json
+        with open(tmp_path / "upload_log.json", encoding="utf-8") as f:
+            log = json.load(f)
+
+        assert len(log) == 1
+        assert log[0]["results"][0]["platform"] == "instagram"
+        assert log[0]["results"][0]["status"] == "published"
+
+    def test_log_appends_multiple_entries(self, tmp_path, event_data):
+        from src.publisher import PublisherBot
+        bot = PublisherBot(output_dir=str(tmp_path))
+        video = tmp_path / "test_final.mp4"
+        video.write_bytes(b"fake")
+
+        bot._write_log(str(video), [{"platform": "instagram", "status": "published"}])
+        bot._write_log(str(video), [{"platform": "tiktok", "status": "published"}])
+
+        import json
+        with open(tmp_path / "upload_log.json", encoding="utf-8") as f:
+            log = json.load(f)
+
+        assert len(log) == 2
+
+    def test_log_has_timestamp(self, tmp_path):
+        from src.publisher import PublisherBot
+        bot = PublisherBot(output_dir=str(tmp_path))
+        bot._write_log("/fake/video.mp4", [])
+
+        import json
+        with open(tmp_path / "upload_log.json", encoding="utf-8") as f:
+            log = json.load(f)
+
+        assert "timestamp" in log[0]
+        assert "T" in log[0]["timestamp"]   # ISO format doğrulama

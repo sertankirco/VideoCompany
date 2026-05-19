@@ -80,8 +80,8 @@ _HOOK_TEMPLATES: dict[str, list[str]] = {
     "GOAL": [
         "BU ANIN TADINI ÇIKARIN...\n{player} VURDU!\n{team_home} {score}",
         "{minute}. DAKİKA. TARİH YAZILIYOR.\n{player} — {team_home}\nSKOR: {score}",
-        "KİMSE BUNU BEKLEMİYORDU.\n{player} GİRDİ!\n{score} • {minute}'",
-        "FRANSA DEĞİL, {team_home}!\n{player} DEVİRDİ.\n{score} — DUR BAKAYIM",
+        "KİMSE BUNU BEKLEMİYORDU.\n{player} GİRDİ! — {team_home}\n{score} • {minute}'",
+        "{team_home} KAZANDI!\n{player} DEVİRDİ.\n{score} — DUR BAKAYIM",
     ],
     "YELLOW_CARD": [
         "HAKEM ÇEKTİ!\n{player} SARI GÖRDÜ.\n{minute}. DAKİKA — {team}",
