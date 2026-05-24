@@ -1,0 +1,35 @@
+services:
+  # ── Maç Simülatörü ─────────────────────────────────────────────────────────
+  simulate:
+    build: .
+    command: ["-m", "src", "simulate", "--interval", "30", "--publish"]
+    env_file: .env
+    volumes:
+      - ./output:/app/output
+      - ./assets:/app/assets
+      - ./templates:/app/templates
+      # aerender: host binary'sini bind-mount et
+      # - /path/to/aerender:/usr/local/bin/aerender:ro
+    restart: unless-stopped
+
+  # ── Platform Yayıncısı (standalone izleme modu) ────────────────────────────
+  watch:
+    build: .
+    command: ["-m", "src", "watch", "--output-dir", "/app/output"]
+    env_file: .env
+    volumes:
+      - ./output:/app/output
+    restart: unless-stopped
+    depends_on:
+      - simulate
+
+  # ── Tek Seferlik Araçlar (docker compose run) ─────────────────────────────
+  # docker compose run --rm tools emit GOAL --match FRA_BRA
+  # docker compose run --rm tools log --last 10
+  # docker compose run --rm tools status
+  tools:
+    build: .
+    env_file: .env
+    volumes:
+      - ./output:/app/output
+    profiles: ["tools"]

@@ -34,6 +34,7 @@ dönüştürüp Instagram Reels, TikTok ve YouTube Shorts'a yayınlayan tam otom
 | `src/data_simulator.py` | WC2026 maç simülatörü + Türkçe hook text üreteci |
 | `src/api_listener.py` | Webhook (Flask) + polling ile canlı maç eventi alma |
 | `src/publisher.py` | Instagram/TikTok/YouTube async upload + watchdog |
+| `src/__main__.py` | CLI entry point (`python -m src`) |
 
 ---
 
@@ -42,7 +43,25 @@ dönüştürüp Instagram Reels, TikTok ve YouTube Shorts'a yayınlayan tam otom
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # token'ları doldur
-pytest tests/ -v       # 111 test — hepsi geçmeli
+pytest tests/ -v       # 146 test — hepsi geçmeli
+```
+
+## CLI Kullanımı
+
+```bash
+python -m src status                    # Sistem kontrolü
+python -m src emit GOAL --match FRA_BRA # Test eventi üret
+python -m src watch                     # /output izle, platformlara yayınla
+python -m src simulate --interval 30    # Maç simülatörünü başlat
+python -m src log --last 10             # Son 10 upload kaydını göster
+```
+
+## Docker
+
+```bash
+docker build -t growlabs2026 .
+docker compose up simulate   # Simülatör + yayıncı
+docker compose run --rm tools status
 ```
 
 ---
