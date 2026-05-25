@@ -669,17 +669,24 @@ class PublisherBot:
                 output.append(r)
 
         logger.info("Publish complete: %s", output)
-        self._write_log(video_path, output)
+        self._write_log(video_path, output, event_data if event_data else None)
         return output
 
-    def _write_log(self, video_path: str, results: list[dict]) -> None:
+    def _write_log(
+        self,
+        video_path: str,
+        results: list[dict],
+        event_data: Optional[dict] = None,
+    ) -> None:
         """Yayın sonuçlarını upload_log.json'a ekler."""
         log_path = Path(self.output_dir) / "upload_log.json"
-        entry = {
+        entry: dict = {
             "timestamp": datetime.utcnow().isoformat(),
             "video": str(video_path),
             "results": results,
         }
+        if event_data:
+            entry["event_data"] = event_data
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             existing: list = []
@@ -723,9 +730,10 @@ class OutputWatcher(FileSystemEventHandler):
     - FFmpeg SFX miksaj çıktısı (_final.mp4) → yayınla
     """
 
-    def __init__(self, bot: PublisherBot):
+    def __init__(self, bot: PublisherBot, sse_notify: Optional[Callable] = None):
         super().__init__()
         self.bot = bot
+        self._sse_notify = sse_notify
 
     def on_created(self, event: FileCreatedEvent) -> None:  # type: ignore[override]
         if event.is_directory:
@@ -735,13 +743,15 @@ class OutputWatcher(FileSystemEventHandler):
             logger.info("[OutputWatcher] New final video detected: %s", path)
             try:
                 self.bot.publish_sync(path)
+                if self._sse_notify:
+                    self._sse_notify({"type": "new_video", "path": path})
             except Exception as exc:
                 logger.exception("[OutputWatcher] Publish failed for %s: %s", path, exc)
         else:
             logger.debug("[OutputWatcher] Skipping non-final file: %s", path)
 
 
-def start_watcher(output_dir: str, bot: PublisherBot) -> Observer:
+def start_watcher(output_dir: str, bot: PublisherBot, sse_notify: Optional[Callable] = None) -> Observer:
     """
     Watchdog Observer'ı başlatır.
 
@@ -754,7 +764,7 @@ def start_watcher(output_dir: str, bot: PublisherBot) -> Observer:
     """
     os.makedirs(output_dir, exist_ok=True)
     observer = Observer()
-    observer.schedule(OutputWatcher(bot), path=output_dir, recursive=False)
+    observer.schedule(OutputWatcher(bot, sse_notify=sse_notify), path=output_dir, recursive=False)
     observer.start()
     logger.info("[OutputWatcher] Watching: %s", output_dir)
     return observer

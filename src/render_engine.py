@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from src.ae_bridge import (
     build_aerender_command,
@@ -253,6 +253,7 @@ class RenderEngine:
         if config.enable_publisher:
             from src.publisher import PublisherBot
             self._publisher = PublisherBot(output_dir=config.output_dir)
+        self._on_event_processed: Optional[Callable] = None
 
     def _discover_sfx(self) -> list[str]:
         """assets_dir içindeki ses dosyalarını listeler."""
@@ -362,20 +363,29 @@ class RenderEngine:
                 output_path = mixed
                 logger.info("Sound design applied → %s", output_path)
 
+        event_dict = {
+            "event_type": event.event_type,
+            "player_name": event.player_name,
+            "team_home": event.team_home,
+            "team_away": event.team_away,
+            "team": event.team,
+            "score_home": event.score_home,
+            "score_away": event.score_away,
+            "minute": event.minute,
+            "match_id": event.match_id,
+            "hook_text": hook_text,
+        }
+
         # 9. Publisher entegrasyonu (watchdog dinliyor, sadece event'i kaydet)
         if self._publisher:
-            event_dict = {
-                "event_type": event.event_type,
-                "player_name": event.player_name,
-                "team_home": event.team_home,
-                "team_away": event.team_away,
-                "team": event.team,
-                "score_home": event.score_home,
-                "score_away": event.score_away,
-                "minute": event.minute,
-                "match_id": event.match_id,
-            }
             self._publisher.register_event(output_path, event_dict)
+
+        # 10. TUI / dashboard callback
+        if self._on_event_processed:
+            try:
+                self._on_event_processed(event_dict)
+            except Exception:
+                logger.debug("_on_event_processed callback error", exc_info=True)
 
         logger.info("Render complete: %s", output_path)
         return output_path
