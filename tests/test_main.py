@@ -36,6 +36,18 @@ class TestParser:
         args = self._parse(["simulate", "--publish"])
         assert args.publish is True
 
+    def test_simulate_web_flag(self):
+        args = self._parse(["simulate", "--web"])
+        assert args.web is True
+
+    def test_simulate_web_default_false(self):
+        args = self._parse(["simulate"])
+        assert args.web is False
+
+    def test_simulate_port(self):
+        args = self._parse(["simulate", "--port", "9090"])
+        assert args.port == 9090
+
     def test_watch_defaults(self):
         args = self._parse(["watch"])
         assert args.command == "watch"
@@ -46,6 +58,14 @@ class TestParser:
     def test_watch_custom_platforms(self):
         args = self._parse(["watch", "--platforms", "instagram,tiktok"])
         assert "youtube" not in args.platforms
+
+    def test_watch_dashboard_flag(self):
+        args = self._parse(["watch", "--dashboard"])
+        assert args.dashboard is True
+
+    def test_watch_dashboard_default_false(self):
+        args = self._parse(["watch"])
+        assert args.dashboard is False
 
     def test_emit_default_event(self):
         args = self._parse(["emit"])
@@ -160,7 +180,6 @@ class TestCmdLog:
         args = build_parser().parse_args(["log", "--output-dir", str(tmp_path), "--last", "3"])
         cmd_log(args)
         captured = capsys.readouterr()
-        # 3 kayıt görünmeli, 10 değil — basit satır sayısı kontrolü
         lines_with_time = [l for l in captured.out.split("\n") if "2026" in l]
         assert len(lines_with_time) == 3
 
@@ -227,6 +246,64 @@ class TestCmdWatch:
 
         mock_observer.stop.assert_called_once()
         mock_observer.join.assert_called_once()
+
+    def test_watch_with_dashboard_starts_flask(self, tmp_path):
+        from src.__main__ import build_parser, cmd_watch
+
+        args = build_parser().parse_args([
+            "watch",
+            "--output-dir", str(tmp_path),
+            "--dashboard",
+            "--port", "9999",
+        ])
+
+        mock_observer = MagicMock()
+        mock_app = MagicMock()
+
+        def fake_sleep(n):
+            raise KeyboardInterrupt
+
+        with (
+            patch("src.publisher.start_watcher", return_value=mock_observer),
+            patch("src.api_listener.create_dashboard_app", return_value=mock_app),
+            patch("time.sleep", side_effect=fake_sleep),
+        ):
+            cmd_watch(args)
+
+        mock_observer.stop.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# cmd_simulate testleri
+# ---------------------------------------------------------------------------
+
+class TestCmdSimulate:
+    def test_simulate_starts_and_stops(self, tmp_path):
+        from src.__main__ import build_parser, cmd_simulate
+
+        args = build_parser().parse_args([
+            "simulate",
+            "--output-dir", str(tmp_path),
+            "--assets-dir", str(tmp_path),
+        ])
+
+        mock_engine = MagicMock()
+        mock_sim = MagicMock()
+
+        def fake_sleep(n):
+            raise KeyboardInterrupt
+
+        with (
+            patch("src.render_engine.RenderEngine", return_value=mock_engine),
+            patch("src.data_simulator.MatchDataSimulator", return_value=mock_sim),
+            patch("time.sleep", side_effect=fake_sleep),
+        ):
+            cmd_simulate(args)
+
+        mock_engine.start.assert_called_once()
+        mock_sim.start.assert_called_once()
+        mock_sim.stop.assert_called_once()
+        mock_engine.stop.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
