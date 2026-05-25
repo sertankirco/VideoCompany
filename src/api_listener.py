@@ -13,13 +13,37 @@ import hmac
 import json
 import logging
 import os
+import queue as _queue
 import time
 import threading
+from pathlib import Path
 from typing import Callable
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level SSE state (shared across all Flask requests)
+# ---------------------------------------------------------------------------
+
+_sse_lock = threading.Lock()
+_sse_subscribers: list[_queue.Queue] = []
+
+_DASHBOARD_HTML = Path(__file__).resolve().parent.parent / "templates" / "dashboard.html"
+
+
+def push_sse_event(payload: dict) -> None:
+    """Push a JSON payload to all connected SSE dashboard clients."""
+    with _sse_lock:
+        dead = []
+        for q in _sse_subscribers:
+            try:
+                q.put_nowait(payload)
+            except _queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_subscribers.remove(q)
 
 
 class MatchAPIListener:
@@ -46,25 +70,102 @@ class MatchAPIListener:
     # Webhook modu
     # ------------------------------------------------------------------
 
-    def create_flask_app(self):
+    def create_flask_app(self, output_dir: str = "output/"):
         """
         Flask uygulaması oluşturur.
 
         Endpoint'ler:
-            GET  /health  — 200 OK
-            GET  /jobs    — Son işlerin listesi (ileride genişletilebilir)
-            POST /event   — Maç eventi (JSON body)
+            GET  /          — Canlı dashboard (dashboard.html)
+            GET  /health    — 200 OK
+            GET  /stream    — SSE canlı event akışı
+            GET  /api/stats — Upload istatistikleri (JSON)
+            GET  /jobs      — Son işlerin listesi
+            POST /event     — Maç eventi (JSON body)
         """
         try:
-            from flask import Flask, request, jsonify
+            from flask import Flask, request, jsonify, Response, stream_with_context, send_file
         except ImportError:
             raise ImportError("flask yüklü değil. 'pip install flask' çalıştırın.")
 
         app = Flask(__name__)
+        _output_dir = output_dir
+
+        @app.get("/")
+        def dashboard():
+            return send_file(str(_DASHBOARD_HTML))
 
         @app.get("/health")
         def health():
             return jsonify({"status": "ok"})
+
+        @app.get("/stream")
+        def sse_stream():
+            def generate():
+                q: _queue.Queue = _queue.Queue(maxsize=50)
+                with _sse_lock:
+                    _sse_subscribers.append(q)
+                try:
+                    yield ":ok\n\n"
+                    while True:
+                        try:
+                            payload = q.get(timeout=15)
+                            yield f"data: {json.dumps(payload)}\n\n"
+                        except _queue.Empty:
+                            yield ": keepalive\n\n"
+                finally:
+                    with _sse_lock:
+                        try:
+                            _sse_subscribers.remove(q)
+                        except ValueError:
+                            pass
+
+            resp = Response(
+                stream_with_context(generate()),
+                content_type="text/event-stream",
+            )
+            resp.headers["Cache-Control"] = "no-cache"
+            resp.headers["X-Accel-Buffering"] = "no"
+            return resp
+
+        @app.get("/api/stats")
+        def api_stats():
+            log_path = Path(_output_dir) / "upload_log.json"
+            entries: list[dict] = []
+            if log_path.exists():
+                try:
+                    with open(log_path, encoding="utf-8") as f:
+                        entries = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    entries = []
+
+            by_platform: dict[str, dict] = {
+                "instagram": {"success": 0, "error": 0, "skipped": 0},
+                "tiktok":    {"success": 0, "error": 0, "skipped": 0},
+                "youtube":   {"success": 0, "error": 0, "skipped": 0},
+            }
+            for entry in entries:
+                for r in entry.get("results", []):
+                    p = r.get("platform", "")
+                    s = r.get("status", "")
+                    if p in by_platform:
+                        if s in ("error", "exception"):
+                            by_platform[p]["error"] += 1
+                        elif s in ("skipped", "dry_run"):
+                            by_platform[p]["skipped"] += 1
+                        else:
+                            by_platform[p]["success"] += 1
+
+            recent_events = [
+                e["event_data"] for e in entries[-10:] if "event_data" in e
+            ]
+            last_event = recent_events[-1] if recent_events else None
+
+            return jsonify({
+                "total_uploads": len(entries),
+                "by_platform": by_platform,
+                "last_event": last_event,
+                "recent_events": recent_events,
+            })
 
         @app.post("/event")
         def receive_event():
@@ -209,3 +310,17 @@ class MatchAPIListener:
         ).hexdigest()
         received = header[len("sha256="):]
         return hmac.compare_digest(expected, received)
+
+
+# ---------------------------------------------------------------------------
+# Standalone dashboard factory (no webhook, just read-only dashboard)
+# ---------------------------------------------------------------------------
+
+
+def create_dashboard_app(output_dir: str = "output/"):
+    """
+    Sadece dashboard route'larını içeren bağımsız Flask uygulaması oluşturur.
+    Webhook veya polling işlevselliği içermez.
+    """
+    listener = MatchAPIListener(on_event=lambda _: None)
+    return listener.create_flask_app(output_dir=output_dir)

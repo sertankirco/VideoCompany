@@ -1,5 +1,5 @@
 """
-Growlabs CLI — python -m growlabs
+Growlabs CLI — python -m src
 
 Subcommands:
   simulate   Maç simülatörünü başlat (render engine'e event gönder)
@@ -13,8 +13,8 @@ import argparse
 import json
 import logging
 import os
-import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -27,6 +27,26 @@ logger = logging.getLogger("growlabs")
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _check_env(var: str) -> bool:
+    return bool(os.getenv(var, "").strip())
+
+
+def _start_web_dashboard(output_dir: str = "output/", port: int = 8080) -> None:
+    from src.api_listener import create_dashboard_app
+    app = create_dashboard_app(output_dir=output_dir)
+    t = threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=port, use_reloader=False),
+        daemon=True,
+    )
+    t.start()
+    logger.info("Dashboard → http://localhost:%d", port)
+
+
+# ---------------------------------------------------------------------------
 # simulate
 # ---------------------------------------------------------------------------
 
@@ -34,6 +54,13 @@ def cmd_simulate(args: argparse.Namespace) -> None:
     """Maç simülatörünü başlatır; Ctrl+C ile durdurulur."""
     from src.render_engine import EngineConfig, RenderEngine
     from src.data_simulator import MatchDataSimulator
+
+    try:
+        from src.tui import SimulatorTUI, is_available as tui_available
+        _TUI_OK = tui_available()
+    except ImportError:
+        SimulatorTUI = None  # type: ignore[assignment]
+        _TUI_OK = False
 
     config = EngineConfig(
         template_path=args.template,
@@ -43,19 +70,33 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         enable_publisher=args.publish,
     )
     engine = RenderEngine(config)
-    engine.start()
+
+    tui = None
+    if _TUI_OK and SimulatorTUI is not None:
+        tui = SimulatorTUI(output_dir=args.output_dir)
+        engine._on_event_processed = tui.on_event  # type: ignore[method-assign]
 
     sim = MatchDataSimulator(engine, interval_sec=args.interval)
+
+    if args.web:
+        _start_web_dashboard(output_dir=args.output_dir, port=args.port)
+
+    engine.start()
     sim.start()
+    if tui:
+        tui.start()
 
     logger.info("Simülatör başlatıldı. Durdurmak için Ctrl+C.")
     try:
-        signal.pause()
-    except (KeyboardInterrupt, AttributeError):
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
         pass
     finally:
         sim.stop()
         engine.stop()
+        if tui:
+            tui.stop()
         logger.info("Simülatör durduruldu.")
 
 
@@ -68,9 +109,21 @@ def cmd_watch(args: argparse.Namespace) -> None:
     from src.publisher import PublisherBot, start_watcher
 
     platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
-    bot = PublisherBot(output_dir=args.output_dir, enabled_platforms=platforms)
+    sse_notify = None
 
-    observer = start_watcher(args.output_dir, bot)
+    if args.dashboard:
+        from src.api_listener import push_sse_event, create_dashboard_app
+        sse_notify = push_sse_event
+        app = create_dashboard_app(output_dir=args.output_dir)
+        t = threading.Thread(
+            target=lambda: app.run(host="0.0.0.0", port=args.port, use_reloader=False),
+            daemon=True,
+        )
+        t.start()
+        logger.info("Dashboard → http://localhost:%d", args.port)
+
+    bot = PublisherBot(output_dir=args.output_dir, enabled_platforms=platforms)
+    observer = start_watcher(args.output_dir, bot, sse_notify=sse_notify)
     logger.info("İzleme başladı: %s  |  Platformlar: %s", args.output_dir, platforms)
     logger.info("Durdurmak için Ctrl+C.")
     try:
@@ -181,12 +234,10 @@ def cmd_status(_args: argparse.Namespace) -> None:
         status  = "✅" if not missing else f"❌ eksik: {', '.join(missing)}"
         print(f"  {platform:<12} {status}")
 
-    # FFmpeg kontrolü
     import shutil
     ffmpeg_ok = shutil.which("ffmpeg") is not None
     print(f"  {'FFmpeg':<12} {'✅' if ffmpeg_ok else '❌ ffmpeg bulunamadı (PATH)'}")
 
-    # Python sürümü
     py = sys.version.split()[0]
     py_ok = tuple(int(x) for x in py.split(".")) >= (3, 11)
     print(f"  {'Python':<12} {'✅' if py_ok else '❌'} {py}")
@@ -200,7 +251,7 @@ def cmd_status(_args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m growlabs",
+        prog="python -m src",
         description="Growlabs 2026 Dünya Kupası Video Otomasyonu",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -213,11 +264,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--interval",   type=int, default=30, help="Event aralığı (saniye)")
     p_sim.add_argument("--no-sound",   action="store_true", help="SFX miksajını devre dışı bırak")
     p_sim.add_argument("--publish",    action="store_true", help="Sosyal medya yayınını etkinleştir")
+    p_sim.add_argument("--web",        action="store_true", help="Web dashboard'u başlat (Flask SSE)")
+    p_sim.add_argument("--port",       type=int, default=8080, metavar="N",
+                       help="Web dashboard portu (varsayılan: 8080)")
 
     # watch
     p_watch = sub.add_parser("watch", help="/output klasörünü izle ve yayınla")
     p_watch.add_argument("--output-dir", default="output/")
     p_watch.add_argument("--platforms",  default="instagram,tiktok,youtube")
+    p_watch.add_argument("--dashboard",  action="store_true",
+                         help="Web dashboard'u başlat (SSE bildirimli)")
+    p_watch.add_argument("--port",       type=int, default=8080, metavar="N",
+                         help="Dashboard portu (varsayılan: 8080)")
 
     # emit
     p_emit = sub.add_parser("emit", help="Tek test eventi üret")

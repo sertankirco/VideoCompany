@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Growlabs 2026 — Live Dashboard</title>
+<style>
+  :root {
+    --bg: #0d0d0d; --surface: #161616; --border: #2a2a2a;
+    --green: #00e676; --yellow: #ffd600; --red: #ff1744;
+    --blue: #448aff; --purple: #e040fb; --text: #e0e0e0; --dim: #666;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Consolas', monospace; font-size: 13px; height: 100vh; display: flex; flex-direction: column; }
+
+  header { padding: 12px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  header h1 { font-size: 15px; font-weight: 600; color: var(--green); letter-spacing: 1px; }
+  #conn-status { font-size: 11px; color: var(--dim); }
+  #conn-status.live::before { content: "● "; color: var(--green); }
+  #conn-status.dead::before { content: "● "; color: var(--red); }
+
+  .grid { display: grid; grid-template-columns: 280px 1fr 1fr; grid-template-rows: auto 1fr; gap: 1px; background: var(--border); flex: 1; overflow: hidden; }
+
+  .card { background: var(--surface); padding: 16px; overflow: hidden; }
+  .card-title { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; color: var(--dim); margin-bottom: 12px; text-transform: uppercase; }
+
+  /* Match card */
+  #match-card { grid-row: 1 / 3; display: flex; flex-direction: column; gap: 12px; }
+  .team-vs { text-align: center; padding: 16px 0; }
+  .team-name { font-size: 18px; font-weight: 700; color: var(--text); }
+  .vs { color: var(--dim); font-size: 12px; margin: 4px 0; }
+  .score-big { font-size: 36px; font-weight: 800; color: var(--green); text-align: center; letter-spacing: 4px; }
+  .match-id { color: var(--dim); font-size: 11px; text-align: center; margin-top: 4px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--dim); }
+  .stat-value { color: var(--text); font-weight: 600; }
+
+  /* Event banner */
+  #event-card { }
+  #event-banner { padding: 12px; border-radius: 6px; background: #1a1a1a; border-left: 3px solid var(--yellow); margin-bottom: 12px; }
+  #event-type { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--yellow); margin-bottom: 4px; }
+  #event-player { font-size: 20px; font-weight: 800; color: var(--text); }
+  #event-minute { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  #hook-text { margin-top: 12px; padding: 10px; background: #111; border-radius: 4px; font-size: 14px; line-height: 1.6; color: #bbb; white-space: pre-line; border-left: 2px solid var(--purple); }
+
+  /* Stats table */
+  #stats-card { }
+  .platform-row { display: grid; grid-template-columns: 1fr 60px 60px 60px; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: center; }
+  .platform-row:last-child { border-bottom: none; }
+  .platform-row.header { color: var(--dim); font-size: 10px; letter-spacing: 1px; padding-bottom: 6px; }
+  .p-name { font-weight: 600; }
+  .p-success { color: var(--green); text-align: right; }
+  .p-error   { color: var(--red);   text-align: right; }
+  .p-skip    { color: var(--dim);   text-align: right; }
+  #total-events { margin-top: 12px; font-size: 11px; color: var(--dim); }
+
+  /* Log */
+  #log-card { overflow: hidden; display: flex; flex-direction: column; }
+  #log-list { overflow-y: auto; flex: 1; }
+  .log-item { display: grid; grid-template-columns: 28px 110px 1fr 40px; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1a1a1a; align-items: center; }
+  .log-icon { font-size: 16px; text-align: center; }
+  .log-type { font-weight: 600; font-size: 11px; color: var(--yellow); }
+  .log-teams { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-minute { color: var(--blue); font-size: 11px; text-align: right; }
+
+  .pulse { animation: pulse 0.6s ease-out; }
+  @keyframes pulse { 0%{background:#1a2a1a} 100%{background:transparent} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚽ GROWLABS 2026 — LIVE DASHBOARD</h1>
+  <span id="conn-status" class="dead">Bağlanıyor…</span>
+</header>
+
+<div class="grid">
+
+  <!-- Sol: Maç Bilgisi -->
+  <div class="card" id="match-card">
+    <div class="card-title">Aktif Maç</div>
+    <div class="team-vs">
+      <div class="team-name" id="team-home">—</div>
+      <div class="vs">VS</div>
+      <div class="team-name" id="team-away">—</div>
+    </div>
+    <div class="score-big" id="score-display">0 — 0</div>
+    <div class="match-id" id="match-id">Bekleniyor…</div>
+    <div style="margin-top:16px;">
+      <div class="stat-row"><span class="stat-label">Dakika</span><span class="stat-value" id="st-minute">—</span></div>
+      <div class="stat-row"><span class="stat-label">Son Event</span><span class="stat-value" id="st-type">—</span></div>
+      <div class="stat-row"><span class="stat-label">Toplam Video</span><span class="stat-value" id="st-total">0</span></div>
+      <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value" id="st-uptime">—</span></div>
+    </div>
+  </div>
+
+  <!-- Orta üst: Son Event -->
+  <div class="card" id="event-card">
+    <div class="card-title">Son Event</div>
+    <div id="event-banner">
+      <div id="event-type">BEKLENIYOR</div>
+      <div id="event-player">—</div>
+      <div id="event-minute">—</div>
+    </div>
+    <pre id="hook-text">Hook metni burada görünecek…</pre>
+  </div>
+
+  <!-- Sağ üst: Upload İstatistikleri -->
+  <div class="card" id="stats-card">
+    <div class="card-title">Platform Upload Durumu</div>
+    <div class="platform-row header">
+      <span>Platform</span><span style="text-align:right">✅</span><span style="text-align:right">❌</span><span style="text-align:right">⏭</span>
+    </div>
+    <div class="platform-row" id="row-instagram">
+      <span class="p-name">📸 Instagram</span>
+      <span class="p-success" id="ig-ok">0</span>
+      <span class="p-error"   id="ig-err">0</span>
+      <span class="p-skip"    id="ig-skip">0</span>
+    </div>
+    <div class="platform-row" id="row-tiktok">
+      <span class="p-name">🎵 TikTok</span>
+      <span class="p-success" id="tt-ok">0</span>
+      <span class="p-error"   id="tt-err">0</span>
+      <span class="p-skip"    id="tt-skip">0</span>
+    </div>
+    <div class="platform-row" id="row-youtube">
+      <span class="p-name">▶️ YouTube</span>
+      <span class="p-success" id="yt-ok">0</span>
+      <span class="p-error"   id="yt-err">0</span>
+      <span class="p-skip"    id="yt-skip">0</span>
+    </div>
+    <div id="total-events">Toplam log kaydı: <span id="total-count">0</span></div>
+  </div>
+
+  <!-- Alt orta+sağ: Event Akışı -->
+  <div class="card" id="log-card" style="grid-column: 2 / 4;">
+    <div class="card-title">Event Akışı</div>
+    <div id="log-list"></div>
+  </div>
+
+</div>
+
+<script>
+const startTime = Date.now();
+const ICONS = {GOAL:'⚽', YELLOW_CARD:'🟡', RED_CARD:'🔴', HALFTIME:'⏸', FULLTIME:'🏁'};
+const TYPE_COLOR = {GOAL:'#00e676', YELLOW_CARD:'#ffd600', RED_CARD:'#ff1744', HALFTIME:'#448aff', FULLTIME:'#e040fb'};
+
+let recentEvents = [];
+
+function uptimeStr() {
+  const s = Math.floor((Date.now() - startTime) / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+setInterval(() => { document.getElementById('st-uptime').textContent = uptimeStr(); }, 1000);
+
+async function refreshStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    const ev = d.last_event;
+    if (ev) {
+      document.getElementById('team-home').textContent = ev.team_home || '—';
+      document.getElementById('team-away').textContent = ev.team_away || '—';
+      document.getElementById('score-display').textContent =
+        `${ev.score_home ?? 0} — ${ev.score_away ?? 0}`;
+      document.getElementById('match-id').textContent = ev.match_id || '';
+      document.getElementById('st-minute').textContent = (ev.minute ?? '—') + "'";
+      const etype = ev.event_type || '—';
+      document.getElementById('st-type').textContent = etype;
+      document.getElementById('event-type').textContent = etype;
+      document.getElementById('event-type').style.color = TYPE_COLOR[etype] || '#ffd600';
+      document.getElementById('event-player').textContent = ev.player_name || (ev.team_home || '—');
+      document.getElementById('event-minute').textContent = `${ev.minute ?? '?'}. dakika`;
+      document.getElementById('hook-text').textContent = ev.hook_text || '—';
+    }
+
+    const bp = d.by_platform || {};
+    ['instagram','tiktok','youtube'].forEach(p => {
+      const prefix = {instagram:'ig', tiktok:'tt', youtube:'yt'}[p];
+      const c = bp[p] || {success:0, error:0, skipped:0};
+      document.getElementById(`${prefix}-ok`).textContent = c.success;
+      document.getElementById(`${prefix}-err`).textContent = c.error;
+      document.getElementById(`${prefix}-skip`).textContent = c.skipped;
+    });
+    document.getElementById('total-count').textContent = d.total_uploads || 0;
+    document.getElementById('st-total').textContent = d.total_uploads || 0;
+
+    // Event log
+    const recent = d.recent_events || [];
+    recentEvents = recent;
+    renderLog();
+  } catch(e) { /* sunucu kapalı */ }
+}
+
+function renderLog() {
+  const el = document.getElementById('log-list');
+  el.innerHTML = [...recentEvents].reverse().map(ev => {
+    const icon = ICONS[ev.event_type] || '📺';
+    const color = TYPE_COLOR[ev.event_type] || '#ffd600';
+    const teams = `${ev.team_home || '?'} vs ${ev.team_away || '?'}`;
+    return `<div class="log-item">
+      <span class="log-icon">${icon}</span>
+      <span class="log-type" style="color:${color}">${ev.event_type || '?'}</span>
+      <span class="log-teams">${teams}</span>
+      <span class="log-minute">${ev.minute ?? '?'}'</span>
+    </div>`;
+  }).join('');
+}
+
+// SSE
+function connectSSE() {
+  const es = new EventSource('/stream');
+  const status = document.getElementById('conn-status');
+
+  es.onopen = () => {
+    status.className = 'live';
+    status.textContent = 'CANLI';
+  };
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'new_video') {
+        document.getElementById('event-banner').classList.add('pulse');
+        setTimeout(() => document.getElementById('event-banner').classList.remove('pulse'), 700);
+        refreshStats();
+      }
+    } catch {}
+  };
+  es.onerror = () => {
+    status.className = 'dead';
+    status.textContent = 'Bağlantı kesildi — yeniden deniyor…';
+    es.close();
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+refreshStats();
+connectSSE();
+setInterval(refreshStats, 10000);
+</script>
+</body>
+</html>
