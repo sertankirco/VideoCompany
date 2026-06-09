@@ -1,0 +1,25 @@
+{
+  "plugins": [
+    {
+      "name": "superpowers",
+      "source": "claude-plugins-official",
+      "version": "5.1.0",
+      "skills": [
+        "using-superpowers",
+        "brainstorming",
+        "test-driven-development",
+        "systematic-debugging",
+        "subagent-driven-development",
+        "writing-plans",
+        "executing-plans",
+        "verification-before-completion",
+        "requesting-code-review",
+        "receiving-code-review",
+        "finishing-a-development-branch",
+        "dispatching-parallel-agents",
+        "using-git-worktrees",
+        "writing-skills"
+      ]
+    }
+  ]
+}
