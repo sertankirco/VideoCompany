@@ -62,12 +62,14 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         SimulatorTUI = None  # type: ignore[assignment]
         _TUI_OK = False
 
+    use_native = args.ffmpeg_native or os.getenv("USE_FFMPEG_NATIVE", "").lower() in ("1", "true", "yes")
     config = EngineConfig(
         template_path=args.template,
         output_dir=args.output_dir,
         assets_dir=args.assets_dir,
         enable_sound_design=not args.no_sound,
         enable_publisher=args.publish,
+        use_ffmpeg_native=use_native,
     )
     engine = RenderEngine(config)
 
@@ -238,6 +240,22 @@ def cmd_status(_args: argparse.Namespace) -> None:
     ffmpeg_ok = shutil.which("ffmpeg") is not None
     print(f"  {'FFmpeg':<12} {'✅' if ffmpeg_ok else '❌ ffmpeg bulunamadı (PATH)'}")
 
+    native_on = os.getenv("USE_FFMPEG_NATIVE", "").lower() in ("1", "true", "yes")
+    print(f"  {'FFmpgNative':<12} {'✅ aktif' if native_on else '⚠️  kapalı (USE_FFMPEG_NATIVE=true yap)'}")
+
+    # Font kontrolü (Pillow render için)
+    _font_candidates = [
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+        "/System/Library/Fonts/Supplemental/Impact.ttf",
+        "C:/Windows/Fonts/impact.ttf",
+    ]
+    font_found = next((f for f in _font_candidates if Path(f).exists()), None)
+    print(f"  {'Font':<12} {'✅ ' + Path(font_found).name if font_found else '❌ font bulunamadı — apt install fonts-liberation'}")
+
     py = sys.version.split()[0]
     py_ok = tuple(int(x) for x in py.split(".")) >= (3, 11)
     print(f"  {'Python':<12} {'✅' if py_ok else '❌'} {py}")
@@ -264,6 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--interval",   type=int, default=30, help="Event aralığı (saniye)")
     p_sim.add_argument("--no-sound",   action="store_true", help="SFX miksajını devre dışı bırak")
     p_sim.add_argument("--publish",    action="store_true", help="Sosyal medya yayınını etkinleştir")
+    p_sim.add_argument("--ffmpeg-native", action="store_true",
+                       help="Adobe AE olmadan FFmpeg+Pillow ile render (USE_FFMPEG_NATIVE=true ile de açılır)")
     p_sim.add_argument("--web",        action="store_true", help="Web dashboard'u başlat (Flask SSE)")
     p_sim.add_argument("--port",       type=int, default=8080, metavar="N",
                        help="Web dashboard portu (varsayılan: 8080)")

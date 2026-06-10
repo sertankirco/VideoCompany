@@ -2,21 +2,25 @@ services:
   # ── Maç Simülatörü ─────────────────────────────────────────────────────────
   simulate:
     build: .
-    command: ["-m", "src", "simulate", "--interval", "30", "--publish"]
+    command: ["simulate", "--interval", "30", "--publish", "--web"]
     env_file: .env
+    ports:
+      - "8080:8080"
     volumes:
       - ./output:/app/output
       - ./assets:/app/assets
       - ./templates:/app/templates
-      # aerender: host binary'sini bind-mount et
+      # aerender: host binary'sini bind-mount et (AE varsa)
       # - /path/to/aerender:/usr/local/bin/aerender:ro
     restart: unless-stopped
 
   # ── Platform Yayıncısı (standalone izleme modu) ────────────────────────────
   watch:
     build: .
-    command: ["-m", "src", "watch", "--output-dir", "/app/output"]
+    command: ["watch", "--output-dir", "/app/output", "--dashboard"]
     env_file: .env
+    ports:
+      - "8080:8080"
     volumes:
       - ./output:/app/output
     restart: unless-stopped
