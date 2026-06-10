@@ -193,17 +193,14 @@ class FrameComposer:
         # 2. Watermark decorations
         _draw_watermark_shapes(base, event_type, pal)
 
-        # 3. Player cut-out (centred, occupies middle section)
+        # 3. Player cut-out (lower half)
         self._paste_player(base, event_data)
 
-        # 4. Top header
-        self._draw_header(base, event_type, pal)
+        # 4. Top block: score → teams → event text
+        self._draw_top_block(base, event_type, event_data, pal)
 
-        # 5. Centre score overlay (on top of player)
-        self._draw_center_score(base, event_data, pal)
-
-        # 6. Bottom info panel (team names + minute only)
-        self._draw_bottom_panel(base, event_data, pal)
+        # 5. Bottom accent bar + minute
+        self._draw_bottom_bar(base, event_data, pal)
 
         return base.convert("RGB")
 
@@ -226,115 +223,96 @@ class FrameComposer:
         player_rgb = ImageEnhance.Brightness(player_rgb).enhance(1.15)
         player.paste(player_rgb, mask=player.split()[3])
 
-        # Centre horizontally; bottom of player sits above the info panel
-        panel_h = 280
+        # Centre horizontally; player fills lower 55% of frame
         px = (W - target_w) // 2
-        py = H - panel_h - target_h + int(target_h * 0.08)   # slight overlap with panel top
+        py = H - target_h - 30
         img.paste(player, (px, py), player)
 
-    def _draw_header(self, img: Image.Image, event_type: str, pal: dict) -> None:
+    def _draw_top_block(
+        self, img: Image.Image, event_type: str, event_data: dict, pal: dict
+    ) -> None:
+        """
+        Top section (dark semi-transparent panel):
+          1. Score  (büyük, accent rengi)
+          2. Takım adları  (sol — orta — sağ)
+          3. Event metni  (GOL! / SARI KART! vb.)
+        """
         draw = ImageDraw.Draw(img)
 
-        # Thin branding bar at top
-        draw.rectangle([0, 0, W, 6], fill=(*pal["accent"], 255))
+        # Accent bar at very top
+        draw.rectangle([0, 0, W, 8], fill=(*pal["accent"], 255))
 
-        # Brand label (top-centre)
-        fn_brand = _load_font(30)
-        brand    = "GROWLABS 2026  ·  #WorldCup"
-        bb = draw.textbbox((0, 0), brand, font=fn_brand)
-        bw = bb[2] - bb[0]
-        draw.text(
-            ((W - bw) // 2, 20), brand,
-            font=fn_brand,
-            fill=(255, 255, 255, 180),
-        )
-
-        # Giant event text
-        label     = _EVENT_DISPLAY.get(event_type, event_type)
-        fn_size   = 200 if len(label) <= 6 else (160 if len(label) <= 12 else 120)
-        fn_event  = _load_font(fn_size)
-        eb = draw.textbbox((0, 0), label, font=fn_event)
-        ew = eb[2] - eb[0]
-        draw.text(
-            ((W - ew) // 2, 80),
-            label,
-            font=fn_event,
-            fill=(255, 255, 255, 255),
-            stroke_width=6,
-            stroke_fill=(0, 0, 0, 160),
-        )
-
-    def _draw_center_score(self, img: Image.Image, event_data: dict, pal: dict) -> None:
-        """Large score badge overlaid at vertical centre of the frame."""
         score_home = event_data.get("score_home", 0)
         score_away = event_data.get("score_away", 0)
-        score_str  = f"{score_home}  —  {score_away}"
+        team_home  = event_data.get("team_home", "EV SAHİBİ").upper()
+        team_away  = event_data.get("team_away", "DEPLASMAN").upper()
 
-        fn_score = _load_font(180)
-        draw     = ImageDraw.Draw(img)
-        sb = draw.textbbox((0, 0), score_str, font=fn_score)
-        sw, sh = sb[2] - sb[0], sb[3] - sb[1]
+        fn_score = _load_font(160)
+        fn_teams = _load_font(52)
+        label    = _EVENT_DISPLAY.get(event_type, event_type)
+        fn_size  = 200 if len(label) <= 6 else (155 if len(label) <= 12 else 115)
+        fn_event = _load_font(fn_size)
 
-        # Vertical position: 56% down the frame
-        cy = int(H * 0.56)
-        sx = (W - sw) // 2
-        sy = cy - sh // 2
+        # --- measure all three rows ---
+        score_str = f"{score_home}  —  {score_away}"
+        sb  = draw.textbbox((0, 0), score_str, font=fn_score)
+        sh  = sb[3] - sb[1]
 
-        # Dark pill behind score
-        pad_x, pad_y = 48, 20
-        badge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        bd    = ImageDraw.Draw(badge)
-        bd.rounded_rectangle(
-            [sx - pad_x, sy - pad_y, sx + sw + pad_x, sy + sh + pad_y],
-            radius=40,
-            fill=(0, 0, 0, 175),
-        )
-        img.alpha_composite(badge)
+        # teams row: "TEAM_HOME   vs   TEAM_AWAY"
+        vs_str  = f"{team_home}   vs   {team_away}"
+        vb  = draw.textbbox((0, 0), vs_str, font=fn_teams)
+        vh  = vb[3] - vb[1]
 
-        # Score text
-        draw.text(
-            (sx, sy), score_str, font=fn_score,
-            fill=(*pal["accent"], 255),
-            stroke_width=4, stroke_fill=(0, 0, 0, 200),
-        )
+        eb  = draw.textbbox((0, 0), label, font=fn_event)
+        eh  = eb[3] - eb[1]
 
-    def _draw_bottom_panel(self, img: Image.Image, event_data: dict, pal: dict) -> None:
-        panel_h = 220
-        panel_y = H - panel_h
+        gap   = 18
+        block_h = sh + gap + vh + gap + eh + gap * 2  # top/bottom padding
+        panel_y = 8  # just below accent bar
 
-        panel = Image.new("RGBA", (W, panel_h), (0, 0, 0, 210))
+        # Dark semi-transparent panel behind the block
+        panel = Image.new("RGBA", (W, block_h + gap), (0, 0, 0, 190))
         img.paste(panel, (0, panel_y), panel)
 
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([0, panel_y, W, panel_y + 5], fill=(*pal["accent"], 255))
+        y = panel_y + gap
 
-        team_home = event_data.get("team_home", "EV SAHİBİ").upper()
-        team_away = event_data.get("team_away", "DEPLASMAN").upper()
-        minute    = event_data.get("minute", 0)
-
-        fn_team   = _load_font(64)
-        fn_minute = _load_font(38)
-
-        # Team name left
-        htb = draw.textbbox((0, 0), team_home, font=fn_team)
-        ht_h = htb[3] - htb[1]
-        team_y = panel_y + (panel_h - ht_h) // 2 - 10
-        draw.text((44, team_y), team_home, font=fn_team, fill=(240, 240, 240, 255))
-
-        # Team name right
-        atb = draw.textbbox((0, 0), team_away, font=fn_team)
+        # Row 1: Score
+        sw_ = sb[2] - sb[0]
         draw.text(
-            (W - 44 - (atb[2] - atb[0]), team_y),
-            team_away, font=fn_team, fill=(240, 240, 240, 255),
+            ((W - sw_) // 2, y), score_str, font=fn_score,
+            fill=(*pal["accent"], 255),
+            stroke_width=4, stroke_fill=(0, 0, 0, 180),
+        )
+        y += sh + gap
+
+        # Row 2: Team names
+        vw = vb[2] - vb[0]
+        draw.text(
+            ((W - vw) // 2, y), vs_str, font=fn_teams,
+            fill=(230, 230, 230, 255),
+        )
+        y += vh + gap
+
+        # Row 3: Event text (accent colour, bold)
+        ew_ = eb[2] - eb[0]
+        draw.text(
+            ((W - ew_) // 2, y), label, font=fn_event,
+            fill=(255, 255, 255, 255),
+            stroke_width=6, stroke_fill=(*pal["accent"], 120),
         )
 
-        # Minute bottom-right
+    def _draw_bottom_bar(self, img: Image.Image, event_data: dict, pal: dict) -> None:
+        """Thin minute badge at very bottom."""
+        draw    = ImageDraw.Draw(img)
+        minute  = event_data.get("minute", 0)
+        fn_min  = _load_font(40)
         min_str = f"{minute}'"
-        mb  = draw.textbbox((0, 0), min_str, font=fn_minute)
+        mb  = draw.textbbox((0, 0), min_str, font=fn_min)
+        mw  = mb[2] - mb[0]
         draw.text(
-            (W - 44 - (mb[2] - mb[0]), H - 38),
-            min_str, font=fn_minute,
-            fill=(*pal["accent"], 210),
+            (W - 52 - mw, H - 50), min_str, font=fn_min,
+            fill=(*pal["accent"], 220),
+            stroke_width=2, stroke_fill=(0, 0, 0, 160),
         )
 
 
