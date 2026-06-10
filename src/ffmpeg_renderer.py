@@ -1,9 +1,10 @@
 """
 FFmpeg Native Renderer — 1080×1920 @ 60fps MP4 without Adobe After Effects.
-ANSEDITS style: full-screen player photo + giant event text + bottom score bar.
+Transfermarkt-style: coloured gradient bg + watermark shapes + centred player + info panel.
 """
 
 import logging
+import math
 import os
 import subprocess
 import tempfile
@@ -12,31 +13,32 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from src.player_assets import get_player_asset
 
 logger = logging.getLogger(__name__)
 
 W, H = 1080, 1920
-FPS = 60
-SCORE_BAR_H = 200
+FPS  = 60
+SCORE_BAR_H = 280   # exported for tests
 
+# Per-event colour palette: bg gradient (light→dark), accent, watermark colour
 _PALETTE: dict[str, dict] = {
-    "GOAL":        {"accent": (0, 230, 118),   "dark": (0, 40, 15),    "bg": (0, 8, 2)},
-    "YELLOW_CARD": {"accent": (255, 214, 0),   "dark": (60, 40, 0),    "bg": (10, 8, 0)},
-    "RED_CARD":    {"accent": (255, 45, 80),   "dark": (60, 0, 15),    "bg": (10, 0, 2)},
-    "HALFTIME":    {"accent": (68, 138, 255),  "dark": (0, 20, 80),    "bg": (0, 3, 12)},
-    "FULLTIME":    {"accent": (224, 64, 251),  "dark": (60, 0, 80),    "bg": (6, 0, 10)},
-    "KICKOFF":     {"accent": (255, 255, 255), "dark": (30, 30, 30),   "bg": (4, 4, 4)},
+    "GOAL":        {"top": (0,  140, 70),  "bot": (0,  30, 15),  "accent": (0, 230, 118),  "wm": (0, 180, 80)},
+    "YELLOW_CARD": {"top": (180, 130, 0),  "bot": (40,  28,  0), "accent": (255, 214, 0),  "wm": (220, 170, 0)},
+    "RED_CARD":    {"top": (180,  10, 30), "bot": (40,   0,  8), "accent": (255,  50, 80), "wm": (220,  30, 50)},
+    "HALFTIME":    {"top": (20,  80, 200), "bot": (0,   15, 60), "accent": (100, 180, 255),"wm": (60, 130, 220)},
+    "FULLTIME":    {"top": (120, 20, 180), "bot": (25,   0, 50), "accent": (220,  80, 255),"wm": (170, 50, 220)},
+    "KICKOFF":     {"top": (40,  40,  80), "bot": (5,    5, 20), "accent": (255, 255, 255),"wm": (120,120, 180)},
 }
 
 _EVENT_DISPLAY: dict[str, str] = {
     "GOAL":        "GOL!",
-    "YELLOW_CARD": "SARI\nKART!",
-    "RED_CARD":    "KIRMIZI\nKART!",
-    "HALFTIME":    "DEVRE\nARASI",
-    "FULLTIME":    "MAÇ\nSONA\nERDİ!",
+    "YELLOW_CARD": "SARI KART!",
+    "RED_CARD":    "KIRMIZI KART!",
+    "HALFTIME":    "DEVRE ARASI",
+    "FULLTIME":    "MAÇ SONA ERDİ!",
     "KICKOFF":     "BAŞLIYOR!",
 }
 
@@ -61,6 +63,102 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+# ---------------------------------------------------------------------------
+# Background helpers
+# ---------------------------------------------------------------------------
+
+def _gradient_bg(pal: dict) -> Image.Image:
+    """Top-to-bottom vertical gradient."""
+    r0, g0, b0 = pal["top"]
+    r1, g1, b1 = pal["bot"]
+    arr = np.zeros((H, W, 3), dtype=np.uint8)
+    for y in range(H):
+        t = y / (H - 1)
+        arr[y, :, 0] = int(r0 + (r1 - r0) * t)
+        arr[y, :, 1] = int(g0 + (g1 - g0) * t)
+        arr[y, :, 2] = int(b0 + (b1 - b0) * t)
+    return Image.fromarray(arr, "RGB").convert("RGBA")
+
+
+def _draw_watermark_shapes(img: Image.Image, event_type: str, pal: dict) -> None:
+    """
+    Large semi-transparent decorative shapes scattered in bg.
+    GOAL → soccer ball circles  |  cards → tilted rect  |  rest → checkmarks
+    """
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d     = ImageDraw.Draw(layer)
+    wm    = pal["wm"]
+
+    placements = [
+        (int(W * 0.82), int(H * 0.12), 210, 28),
+        (int(W * 0.88), int(H * 0.40), 160, 22),
+        (int(W * 0.06), int(H * 0.22), 155, 20),
+        (int(W * 0.12), int(H * 0.55), 115, 18),
+        (int(W * 0.78), int(H * 0.65), 100, 15),
+    ]
+
+    for cx, cy, size, alpha in placements:
+        if event_type in ("YELLOW_CARD", "RED_CARD"):
+            _draw_card_shape(d, cx, cy, size, wm, alpha)
+        elif event_type == "GOAL":
+            _draw_ball_shape(d, cx, cy, size, wm, alpha)
+        else:
+            _draw_checkmark_shape(d, cx, cy, size, wm, alpha)
+
+    img.alpha_composite(layer)
+
+
+def _draw_checkmark_shape(
+    d: ImageDraw.ImageDraw, cx: int, cy: int,
+    size: int, colour: tuple, alpha: int,
+) -> None:
+    s = size
+    pts = [
+        (cx - s * 0.50, cy + s * 0.05),
+        (cx - s * 0.12, cy + s * 0.52),
+        (cx + s * 0.52, cy - s * 0.45),
+        (cx + s * 0.40, cy - s * 0.58),
+        (cx - s * 0.12, cy + s * 0.32),
+        (cx - s * 0.40, cy - s * 0.08),
+    ]
+    pts = [(float(x), float(y)) for x, y in pts]
+    d.polygon(pts, fill=(*colour, alpha))
+
+
+def _draw_card_shape(
+    d: ImageDraw.ImageDraw, cx: int, cy: int,
+    size: int, colour: tuple, alpha: int,
+) -> None:
+    hw, hh = int(size * 0.35), int(size * 0.50)
+    angle  = math.radians(20)
+    corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    pts = [
+        (cx + x * math.cos(angle) - y * math.sin(angle),
+         cy + x * math.sin(angle) + y * math.cos(angle))
+        for x, y in corners
+    ]
+    d.polygon(pts, fill=(*colour, alpha))
+
+
+def _draw_ball_shape(
+    d: ImageDraw.ImageDraw, cx: int, cy: int,
+    size: int, colour: tuple, alpha: int,
+) -> None:
+    r = int(size * 0.55)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(*colour, alpha), width=max(4, size // 20))
+    # Pentagon patches (simplified as small circles)
+    for angle_deg in range(0, 360, 72):
+        a  = math.radians(angle_deg)
+        px = cx + int(r * 0.55 * math.cos(a))
+        py = cy + int(r * 0.55 * math.sin(a))
+        pr = max(3, size // 18)
+        d.ellipse([px - pr, py - pr, px + pr, py + pr], fill=(*colour, alpha))
+
+
+# ---------------------------------------------------------------------------
+# FrameComposer
+# ---------------------------------------------------------------------------
+
 @dataclass
 class FFmpegRendererConfig:
     output_dir: str
@@ -73,245 +171,175 @@ class FFmpegRendererConfig:
 
 class FrameComposer:
     """
-    ANSEDITS-style 1080×1920 frame:
-      - Full-screen player photo (cover crop)
-      - Dark gradient overlay for legibility
-      - Giant accent-coloured event text (centred, bold stroke)
-      - Player name + hook text below
-      - Solid dark score bar at bottom
-      - Thin accent line at top
+    Transfermarkt-style 1080×1920 frame:
+      1. Coloured vertical gradient background
+      2. Large semi-transparent watermark shapes (event-specific)
+      3. Player cut-out — centred, lower-half
+      4. Top header: branding line + giant event text
+      5. Bottom info panel: flag circle + team + score + minute
     """
 
     def __init__(self, assets_dir: str, player_cache_dir: Optional[str] = None):
-        self._assets_dir = assets_dir
+        self._assets_dir    = assets_dir
         self._player_cache_dir = player_cache_dir
 
     def compose(self, event_data: dict) -> Image.Image:
         event_type = event_data.get("event_type", "GOAL")
         pal = _PALETTE.get(event_type, _PALETTE["GOAL"])
 
-        # 1. Player photo full-screen (cover crop)
-        base = self._player_fullscreen(event_data, pal)
+        # 1. Gradient background
+        base = _gradient_bg(pal)
 
-        # 2. Gradient overlay: dark top + dark bottom
-        overlay = self._gradient_overlay(pal)
-        base = Image.alpha_composite(base, overlay)
+        # 2. Watermark decorations
+        _draw_watermark_shapes(base, event_type, pal)
 
-        # 3. Score bar (solid dark strip at bottom)
-        self._draw_score_bar(base, event_data, pal)
+        # 3. Player cut-out (centred, occupies middle section)
+        self._paste_player(base, event_data)
 
-        # 4. Giant event text (centred, accent colour)
-        self._draw_event_text(base, event_type, pal)
+        # 4. Top header
+        self._draw_header(base, event_type, pal)
 
-        # 5. Player name
-        self._draw_player_name(base, event_data, pal)
-
-        # 6. Hook text
-        self._draw_hook_text(base, event_data)
-
-        # 7. Minute badge (top-centre)
-        self._draw_minute_badge(base, event_data, pal)
-
-        # 8. Thin accent bar at very top
-        draw = ImageDraw.Draw(base)
-        draw.rectangle([0, 0, W, 8], fill=(*pal["accent"], 255))
+        # 5. Bottom info panel
+        self._draw_bottom_panel(base, event_data, pal)
 
         return base.convert("RGB")
 
     # ------------------------------------------------------------------
-    # Layers
-    # ------------------------------------------------------------------
 
-    def _player_fullscreen(self, event_data: dict, pal: dict) -> Image.Image:
+    def _paste_player(self, img: Image.Image, event_data: dict) -> None:
         player_name = event_data.get("player_name") or None
-        team = event_data.get("team_home") or event_data.get("team") or ""
+        team        = event_data.get("team_home") or event_data.get("team") or ""
         path = get_player_asset(player_name, team, self._player_cache_dir)
-        img = Image.open(path).convert("RGBA")
+        player = Image.open(path).convert("RGBA")
 
-        # Cover: scale so the image fills the entire W×H canvas
-        scale = max(W / img.width, H / img.height)
-        nw, nh = int(img.width * scale), int(img.height * scale)
-        img = img.resize((nw, nh), Image.LANCZOS)
+        # Scale so player height = 65% of canvas height
+        target_h = int(H * 0.65)
+        scale    = target_h / player.height
+        target_w = int(player.width * scale)
+        player   = player.resize((target_w, target_h), Image.LANCZOS)
 
-        # Center crop
-        cx, cy = (nw - W) // 2, (nh - H) // 2
-        img = img.crop((cx, cy, cx + W, cy + H))
+        # Slightly brighten the cut-out so it pops from the gradient
+        player_rgb = player.convert("RGB")
+        player_rgb = ImageEnhance.Brightness(player_rgb).enhance(1.15)
+        player.paste(player_rgb, mask=player.split()[3])
 
-        # Slight desaturate so text pops
-        from PIL import ImageEnhance
-        img = ImageEnhance.Color(img).enhance(0.75)
+        # Centre horizontally; bottom of player sits above the info panel
+        panel_h = 280
+        px = (W - target_w) // 2
+        py = H - panel_h - target_h + int(target_h * 0.08)   # slight overlap with panel top
+        img.paste(player, (px, py), player)
 
-        base = Image.new("RGBA", (W, H), (0, 0, 0, 255))
-        base.paste(img, (0, 0), img)
-        return base
+    def _draw_header(self, img: Image.Image, event_type: str, pal: dict) -> None:
+        draw = ImageDraw.Draw(img)
 
-    def _gradient_overlay(self, pal: dict) -> Image.Image:
-        arr = np.zeros((H, W, 4), dtype=np.uint8)
-        r, g, b = pal["dark"]
-        arr[:, :, 0] = r
-        arr[:, :, 1] = g
-        arr[:, :, 2] = b
+        # Thin branding bar at top
+        draw.rectangle([0, 0, W, 6], fill=(*pal["accent"], 255))
 
-        # Top: dark fade-in (0→250px)
-        for y in range(250):
-            arr[y, :, 3] = int(200 * (1 - y / 250))
+        # Brand label (top-centre)
+        fn_brand = _load_font(30)
+        brand    = "GROWLABS 2026  ·  #WorldCup"
+        bb = draw.textbbox((0, 0), brand, font=fn_brand)
+        bw = bb[2] - bb[0]
+        draw.text(
+            ((W - bw) // 2, 20), brand,
+            font=fn_brand,
+            fill=(255, 255, 255, 180),
+        )
 
-        # Mid-centre: slight tint
-        for y in range(250, int(H * 0.5)):
-            arr[y, :, 3] = 40
+        # Giant event text
+        label     = _EVENT_DISPLAY.get(event_type, event_type)
+        fn_size   = 200 if len(label) <= 6 else (160 if len(label) <= 12 else 120)
+        fn_event  = _load_font(fn_size)
+        eb = draw.textbbox((0, 0), label, font=fn_event)
+        ew = eb[2] - eb[0]
+        draw.text(
+            ((W - ew) // 2, 80),
+            label,
+            font=fn_event,
+            fill=(255, 255, 255, 255),
+            stroke_width=6,
+            stroke_fill=(0, 0, 0, 160),
+        )
 
-        # Bottom: strong dark for score bar legibility
-        fade_start = int(H * 0.5)
-        for y in range(fade_start, H):
-            progress = (y - fade_start) / (H - fade_start)
-            arr[y, :, 3] = min(255, int(220 * progress ** 1.4))
+    def _draw_bottom_panel(self, img: Image.Image, event_data: dict, pal: dict) -> None:
+        panel_h  = 280
+        panel_y  = H - panel_h
 
-        return Image.fromarray(arr, "RGBA")
-
-    def _draw_score_bar(self, img: Image.Image, event_data: dict, pal: dict) -> None:
-        bar_y = H - SCORE_BAR_H
-        bar = Image.new("RGBA", (W, SCORE_BAR_H), (0, 0, 0, 235))
-        img.paste(bar, (0, bar_y), bar)
+        # Dark semi-transparent panel
+        panel = Image.new("RGBA", (W, panel_h), (0, 0, 0, 210))
+        img.paste(panel, (0, panel_y), panel)
 
         draw = ImageDraw.Draw(img)
-        # Accent line at top of score bar
-        draw.rectangle([0, bar_y, W, bar_y + 4], fill=(*pal["accent"], 200))
 
-        cy = bar_y + SCORE_BAR_H // 2
+        # Accent line at panel top
+        draw.rectangle([0, panel_y, W, panel_y + 5], fill=(*pal["accent"], 255))
 
-        team_home = event_data.get("team_home", "EV SAHİBİ").upper()
-        team_away = event_data.get("team_away", "DEPLASMAN").upper()
+        team_home  = event_data.get("team_home", "EV SAHİBİ").upper()
+        team_away  = event_data.get("team_away", "DEPLASMAN").upper()
         score_home = event_data.get("score_home", 0)
         score_away = event_data.get("score_away", 0)
+        minute     = event_data.get("minute", 0)
 
-        fn_team  = _load_font(46)
-        fn_score = _load_font(100)
+        fn_team    = _load_font(58)
+        fn_score   = _load_font(90)
+        fn_minute  = _load_font(36)
 
-        score_str = f"{score_home}  —  {score_away}"
+        # Score (centre, accent colour)
+        score_str  = f"{score_home}  —  {score_away}"
         sb = draw.textbbox((0, 0), score_str, font=fn_score)
-        sw = sb[2] - sb[0]
-        sh = sb[3] - sb[1]
+        sw, sh = sb[2] - sb[0], sb[3] - sb[1]
+        score_y = panel_y + 24
         draw.text(
-            ((W - sw) // 2, cy - sh // 2 - 2),
+            ((W - sw) // 2, score_y),
             score_str, font=fn_score,
             fill=(*pal["accent"], 255),
-            stroke_width=2, stroke_fill=(0, 0, 0, 200),
+            stroke_width=2, stroke_fill=(0, 0, 0, 180),
         )
 
-        # Home team (left)
-        htb = draw.textbbox((0, 0), team_home, font=fn_team)
-        draw.text(
-            (44, cy - (htb[3] - htb[1]) // 2),
-            team_home, font=fn_team,
-            fill=(240, 240, 240, 255),
-        )
-
-        # Away team (right)
+        # Team names left/right
+        team_y = score_y + sh + 8
+        draw.text((44, team_y), team_home, font=fn_team, fill=(240, 240, 240, 255))
         atb = draw.textbbox((0, 0), team_away, font=fn_team)
         draw.text(
-            (W - 44 - (atb[2] - atb[0]), cy - (atb[3] - atb[1]) // 2),
-            team_away, font=fn_team,
-            fill=(240, 240, 240, 255),
+            (W - 44 - (atb[2] - atb[0]), team_y),
+            team_away, font=fn_team, fill=(240, 240, 240, 255),
         )
 
-    def _draw_event_text(self, img: Image.Image, event_type: str, pal: dict) -> None:
-        label = _EVENT_DISPLAY.get(event_type, event_type)
-        lines = label.split("\n")
-        font_size = {1: 310, 2: 240, 3: 185}.get(len(lines), 185)
-        font = _load_font(font_size)
-        draw = ImageDraw.Draw(img)
-
-        line_dims = []
-        for line in lines:
-            bb = draw.textbbox((0, 0), line, font=font)
-            line_dims.append((bb[2] - bb[0], bb[3] - bb[1]))
-
-        line_h = max(h for _, h in line_dims)
-        gap = 16
-        total_h = len(lines) * line_h + (len(lines) - 1) * gap
-        # Centre block between minute badge (~120px) and player-name area
-        start_y = int(H * 0.22)
-
-        for i, (line, (lw, lh)) in enumerate(zip(lines, line_dims)):
-            x = (W - lw) // 2
-            y = start_y + i * (line_h + gap)
-            # Black stroke for contrast
-            draw.text(
-                (x, y), line, font=font,
-                fill=(*pal["accent"], 255),
-                stroke_width=8, stroke_fill=(0, 0, 0, 230),
-            )
-
-    def _draw_player_name(self, img: Image.Image, event_data: dict, pal: dict) -> None:
-        name = event_data.get("player_name") or ""
-        if not name:
-            return
-        font = _load_font(58)
-        draw = ImageDraw.Draw(img)
-        text = name.upper()
-        bb = draw.textbbox((0, 0), text, font=font)
-        tw = bb[2] - bb[0]
-        # Place below event text block — roughly 62% down
-        y = int(H * 0.62)
-        x = (W - tw) // 2
+        # Minute badge (bottom-right)
+        min_str = f"{minute}'"
+        mb = draw.textbbox((0, 0), min_str, font=fn_minute)
+        mw = mb[2] - mb[0]
         draw.text(
-            (x, y), text, font=font,
-            fill=(255, 255, 255, 240),
-            stroke_width=3, stroke_fill=(0, 0, 0, 200),
+            (W - 44 - mw, H - 40),
+            min_str, font=fn_minute,
+            fill=(*pal["accent"], 200),
         )
 
-    def _draw_hook_text(self, img: Image.Image, event_data: dict) -> None:
+        # Hook text (small, below score, if present)
         hook = (event_data.get("hook_text") or "").strip()
-        if not hook:
-            return
-        lines = [l.strip() for l in hook.split("\n") if l.strip()][:3]
-        font = _load_font(44)
-        draw = ImageDraw.Draw(img)
-        y = int(H * 0.70)
-        for line in lines:
-            bb = draw.textbbox((0, 0), line, font=font)
-            tw = bb[2] - bb[0]
-            th = bb[3] - bb[1]
-            draw.text(
-                ((W - tw) // 2, y), line, font=font,
-                fill=(200, 200, 200, 220),
-                stroke_width=2, stroke_fill=(0, 0, 0, 180),
-            )
-            y += th + 10
+        if hook:
+            lines = [l.strip() for l in hook.split("\n") if l.strip()][:2]
+            fn_hook = _load_font(32)
+            hy = score_y + sh + 6
+            for line in lines:
+                hb = draw.textbbox((0, 0), line, font=fn_hook)
+                hw = hb[2] - hb[0]
+                # only show if it fits above team names
+                if hy + (hb[3] - hb[1]) < team_y - 4:
+                    draw.text(
+                        ((W - hw) // 2, hy), line,
+                        font=fn_hook, fill=(180, 180, 180, 200),
+                    )
+                    hy += (hb[3] - hb[1]) + 4
 
-    def _draw_minute_badge(self, img: Image.Image, event_data: dict, pal: dict) -> None:
-        minute = event_data.get("minute", 0)
-        text = f"{minute}'"
-        font = _load_font(52)
-        draw = ImageDraw.Draw(img)
-        bb = draw.textbbox((0, 0), text, font=font)
-        tw, th = bb[2] - bb[0], bb[3] - bb[1]
-        pad_x, pad_y = 28, 14
-        bx = (W - tw) // 2
-        by = 22
 
-        badge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        bd = ImageDraw.Draw(badge)
-        bd.rounded_rectangle(
-            [bx - pad_x, by, bx + tw + pad_x, by + th + pad_y * 2],
-            radius=30,
-            fill=(*pal["accent"], 220),
-        )
-        img.paste(badge, (0, 0), badge)
-        draw.text(
-            (bx, by + pad_y), text, font=font,
-            fill=(0, 0, 0, 255),
-        )
-
+# ---------------------------------------------------------------------------
+# Renderer + FFmpeg command
+# ---------------------------------------------------------------------------
 
 class FFmpegNativeRenderer:
-    """
-    Compose frame (Pillow) + encode video (FFmpeg zoompan Ken Burns).
-    Produces 1080×1920 @ 60fps MP4 — no Adobe After Effects needed.
-    """
-
     def __init__(self, config: FFmpegRendererConfig):
-        self.config = config
+        self.config    = config
         self._composer = FrameComposer(
             assets_dir=config.assets_dir,
             player_cache_dir=config.player_cache_dir,
@@ -319,7 +347,6 @@ class FFmpegNativeRenderer:
 
     def render(self, event_data: dict, output_path: Optional[str] = None) -> str:
         os.makedirs(self.config.output_dir, exist_ok=True)
-
         if output_path is None:
             import uuid
             job_id = uuid.uuid4().hex[:8]
@@ -343,16 +370,14 @@ class FFmpegNativeRenderer:
                 fps=self.config.fps,
                 duration_sec=self.config.duration_sec,
             )
-            exit_code = _run_ffmpeg(cmd)
-            if exit_code != 0:
-                raise RuntimeError(f"FFmpeg encoding failed (exit {exit_code})")
+            if _run_ffmpeg(cmd) != 0:
+                raise RuntimeError("FFmpeg encoding failed")
             logger.info("FFmpeg render complete → %s", output_path)
         finally:
             try:
                 os.unlink(frame_path)
             except OSError:
                 pass
-
         return output_path
 
 
@@ -364,28 +389,17 @@ def build_ffmpeg_command(
     duration_sec: int = 30,
 ) -> list[str]:
     total_frames = duration_sec * fps
-    zoom_rate = round(0.04 / total_frames, 6)
+    zoom_rate    = round(0.04 / total_frames, 6)
     return [
-        ffmpeg_bin,
-        "-loop", "1",
-        "-framerate", str(fps),
-        "-i", frame_path,
+        ffmpeg_bin, "-loop", "1", "-framerate", str(fps), "-i", frame_path,
         "-vf", (
-            f"zoompan=z='min(zoom+{zoom_rate},1.04)'"
-            f":d={total_frames}"
-            f":x='iw/2-(iw/zoom/2)'"
-            f":y='ih/2-(ih/zoom/2)'"
-            f":s={W}x{H},"
-            f"fps={fps},"
-            f"format=yuv420p"
+            f"zoompan=z='min(zoom+{zoom_rate},1.04)':d={total_frames}"
+            f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H},"
+            f"fps={fps},format=yuv420p"
         ),
         "-t", str(duration_sec),
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-y",
-        output_path,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-y", output_path,
     ]
 
 
