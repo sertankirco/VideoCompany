@@ -37,3 +37,6 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Runtime player image cache (downloaded at runtime)
+assets/players/cache/
