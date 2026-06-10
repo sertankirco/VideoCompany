@@ -199,7 +199,10 @@ class FrameComposer:
         # 4. Top header
         self._draw_header(base, event_type, pal)
 
-        # 5. Bottom info panel
+        # 5. Centre score overlay (on top of player)
+        self._draw_center_score(base, event_data, pal)
+
+        # 6. Bottom info panel (team names + minute only)
         self._draw_bottom_panel(base, event_data, pal)
 
         return base.convert("RGB")
@@ -261,76 +264,78 @@ class FrameComposer:
             stroke_fill=(0, 0, 0, 160),
         )
 
-    def _draw_bottom_panel(self, img: Image.Image, event_data: dict, pal: dict) -> None:
-        panel_h  = 280
-        panel_y  = H - panel_h
+    def _draw_center_score(self, img: Image.Image, event_data: dict, pal: dict) -> None:
+        """Large score badge overlaid at vertical centre of the frame."""
+        score_home = event_data.get("score_home", 0)
+        score_away = event_data.get("score_away", 0)
+        score_str  = f"{score_home}  —  {score_away}"
 
-        # Dark semi-transparent panel
+        fn_score = _load_font(180)
+        draw     = ImageDraw.Draw(img)
+        sb = draw.textbbox((0, 0), score_str, font=fn_score)
+        sw, sh = sb[2] - sb[0], sb[3] - sb[1]
+
+        # Vertical position: 56% down the frame
+        cy = int(H * 0.56)
+        sx = (W - sw) // 2
+        sy = cy - sh // 2
+
+        # Dark pill behind score
+        pad_x, pad_y = 48, 20
+        badge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        bd    = ImageDraw.Draw(badge)
+        bd.rounded_rectangle(
+            [sx - pad_x, sy - pad_y, sx + sw + pad_x, sy + sh + pad_y],
+            radius=40,
+            fill=(0, 0, 0, 175),
+        )
+        img.alpha_composite(badge)
+
+        # Score text
+        draw.text(
+            (sx, sy), score_str, font=fn_score,
+            fill=(*pal["accent"], 255),
+            stroke_width=4, stroke_fill=(0, 0, 0, 200),
+        )
+
+    def _draw_bottom_panel(self, img: Image.Image, event_data: dict, pal: dict) -> None:
+        panel_h = 220
+        panel_y = H - panel_h
+
         panel = Image.new("RGBA", (W, panel_h), (0, 0, 0, 210))
         img.paste(panel, (0, panel_y), panel)
 
         draw = ImageDraw.Draw(img)
-
-        # Accent line at panel top
         draw.rectangle([0, panel_y, W, panel_y + 5], fill=(*pal["accent"], 255))
 
-        team_home  = event_data.get("team_home", "EV SAHİBİ").upper()
-        team_away  = event_data.get("team_away", "DEPLASMAN").upper()
-        score_home = event_data.get("score_home", 0)
-        score_away = event_data.get("score_away", 0)
-        minute     = event_data.get("minute", 0)
+        team_home = event_data.get("team_home", "EV SAHİBİ").upper()
+        team_away = event_data.get("team_away", "DEPLASMAN").upper()
+        minute    = event_data.get("minute", 0)
 
-        fn_team    = _load_font(58)
-        fn_score   = _load_font(90)
-        fn_minute  = _load_font(36)
+        fn_team   = _load_font(64)
+        fn_minute = _load_font(38)
 
-        # Score (centre, accent colour)
-        score_str  = f"{score_home}  —  {score_away}"
-        sb = draw.textbbox((0, 0), score_str, font=fn_score)
-        sw, sh = sb[2] - sb[0], sb[3] - sb[1]
-        score_y = panel_y + 24
-        draw.text(
-            ((W - sw) // 2, score_y),
-            score_str, font=fn_score,
-            fill=(*pal["accent"], 255),
-            stroke_width=2, stroke_fill=(0, 0, 0, 180),
-        )
-
-        # Team names left/right
-        team_y = score_y + sh + 8
+        # Team name left
+        htb = draw.textbbox((0, 0), team_home, font=fn_team)
+        ht_h = htb[3] - htb[1]
+        team_y = panel_y + (panel_h - ht_h) // 2 - 10
         draw.text((44, team_y), team_home, font=fn_team, fill=(240, 240, 240, 255))
+
+        # Team name right
         atb = draw.textbbox((0, 0), team_away, font=fn_team)
         draw.text(
             (W - 44 - (atb[2] - atb[0]), team_y),
             team_away, font=fn_team, fill=(240, 240, 240, 255),
         )
 
-        # Minute badge (bottom-right)
+        # Minute bottom-right
         min_str = f"{minute}'"
-        mb = draw.textbbox((0, 0), min_str, font=fn_minute)
-        mw = mb[2] - mb[0]
+        mb  = draw.textbbox((0, 0), min_str, font=fn_minute)
         draw.text(
-            (W - 44 - mw, H - 40),
+            (W - 44 - (mb[2] - mb[0]), H - 38),
             min_str, font=fn_minute,
-            fill=(*pal["accent"], 200),
+            fill=(*pal["accent"], 210),
         )
-
-        # Hook text (small, below score, if present)
-        hook = (event_data.get("hook_text") or "").strip()
-        if hook:
-            lines = [l.strip() for l in hook.split("\n") if l.strip()][:2]
-            fn_hook = _load_font(32)
-            hy = score_y + sh + 6
-            for line in lines:
-                hb = draw.textbbox((0, 0), line, font=fn_hook)
-                hw = hb[2] - hb[0]
-                # only show if it fits above team names
-                if hy + (hb[3] - hb[1]) < team_y - 4:
-                    draw.text(
-                        ((W - hw) // 2, hy), line,
-                        font=fn_hook, fill=(180, 180, 180, 200),
-                    )
-                    hy += (hb[3] - hb[1]) + 4
 
 
 # ---------------------------------------------------------------------------
