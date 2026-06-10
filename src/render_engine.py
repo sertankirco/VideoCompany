@@ -215,6 +215,7 @@ class EngineConfig:
     ffmpeg_bin: str = "ffmpeg"         # FFmpeg binary yolu
     enable_sound_design: bool = True   # FFmpeg SFX miksajı aktif/pasif
     enable_publisher: bool = False     # Sosyal medya yayıncısı aktif/pasif
+    use_ffmpeg_native: bool = False    # True → FFmpegNativeRenderer (AE gerekmez)
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +255,16 @@ class RenderEngine:
             from src.publisher import PublisherBot
             self._publisher = PublisherBot(output_dir=config.output_dir)
         self._on_event_processed: Optional[Callable] = None
+        self._ffmpeg_renderer = None
+        if config.use_ffmpeg_native:
+            from src.ffmpeg_renderer import FFmpegNativeRenderer, FFmpegRendererConfig
+            self._ffmpeg_renderer = FFmpegNativeRenderer(FFmpegRendererConfig(
+                output_dir=config.output_dir,
+                assets_dir=config.assets_dir,
+                fps=config.fps,
+                duration_sec=config.duration_sec,
+                ffmpeg_bin=config.ffmpeg_bin,
+            ))
 
     def _discover_sfx(self) -> list[str]:
         """assets_dir içindeki ses dosyalarını listeler."""
@@ -315,41 +326,56 @@ class RenderEngine:
         text_updates.append({"layer": "HOOK_TEXT", "text": hook_text})
         logger.info("Hook text: %s", hook_text.replace("\n", " | "))
 
-        # 3. JSX oluştur (Motion Blur 360° dahil)
-        jsx_content = generate_jsx(
-            project_path=str(Path(self.config.template_path).resolve()),
-            comp_name=self.config.comp_name,
-            text_updates=text_updates,
-        )
+        # 3-7. Render: FFmpeg native veya AE/aerender yolu
+        event_dict_for_render = {
+            "event_type": event.event_type,
+            "player_name": event.player_name,
+            "team_home": event.team_home,
+            "team_away": event.team_away,
+            "team": event.team,
+            "score_home": event.score_home,
+            "score_away": event.score_away,
+            "minute": event.minute,
+            "match_id": event.match_id,
+            "hook_text": hook_text,
+        }
 
-        # 4. JSX çalıştır → .aep güncelle
-        execute_jsx(jsx_content)
-
-        # 5. Kesim planı + SFX senkronizasyonu
         total_frames = self.config.duration_sec * self.config.fps
         cuts = plan_cuts(total_frames, self._sfx_paths, self.config.fps)
         logger.info("Cut plan: %d cut points over %d frames", len(cuts), total_frames)
 
-        # 6. Render manifest kaydet
-        manifest_path = output_path.replace(".mp4", "_manifest.json")
-        self._save_manifest(event, cuts, output_path, manifest_path)
+        if self._ffmpeg_renderer:
+            # FFmpeg native path — no AE dependency
+            output_path = self._ffmpeg_renderer.render(
+                event_dict_for_render, output_path=output_path
+            )
+            logger.info("FFmpeg native render → %s", output_path)
+        else:
+            # AE/aerender path
+            jsx_content = generate_jsx(
+                project_path=str(Path(self.config.template_path).resolve()),
+                comp_name=self.config.comp_name,
+                text_updates=text_updates,
+            )
+            execute_jsx(jsx_content)
 
-        # 7. aerender tetikle
-        aerender_bin = self.config.aerender_bin or get_aerender_path()
-        end_frame = total_frames - 1
-        cmd = build_aerender_command(
-            aerender_bin=aerender_bin,
-            project_path=str(Path(self.config.template_path).resolve()),
-            comp_name=self.config.comp_name,
-            output_path=output_path,
-            start_frame=0,
-            end_frame=end_frame,
-            fps=self.config.fps,
-        )
-        exit_code = run_render(aerender_bin, cmd)
+            manifest_path = output_path.replace(".mp4", "_manifest.json")
+            self._save_manifest(event, cuts, output_path, manifest_path)
 
-        if exit_code != 0:
-            raise RuntimeError(f"aerender failed with exit code {exit_code}")
+            aerender_bin = self.config.aerender_bin or get_aerender_path()
+            end_frame = total_frames - 1
+            cmd = build_aerender_command(
+                aerender_bin=aerender_bin,
+                project_path=str(Path(self.config.template_path).resolve()),
+                comp_name=self.config.comp_name,
+                output_path=output_path,
+                start_frame=0,
+                end_frame=end_frame,
+                fps=self.config.fps,
+            )
+            exit_code = run_render(aerender_bin, cmd)
+            if exit_code != 0:
+                raise RuntimeError(f"aerender failed with exit code {exit_code}")
 
         # 8. Frame-accurate SFX miksajı (FFmpeg)
         if self._sound_designer and cuts:
@@ -363,27 +389,14 @@ class RenderEngine:
                 output_path = mixed
                 logger.info("Sound design applied → %s", output_path)
 
-        event_dict = {
-            "event_type": event.event_type,
-            "player_name": event.player_name,
-            "team_home": event.team_home,
-            "team_away": event.team_away,
-            "team": event.team,
-            "score_home": event.score_home,
-            "score_away": event.score_away,
-            "minute": event.minute,
-            "match_id": event.match_id,
-            "hook_text": hook_text,
-        }
-
         # 9. Publisher entegrasyonu (watchdog dinliyor, sadece event'i kaydet)
         if self._publisher:
-            self._publisher.register_event(output_path, event_dict)
+            self._publisher.register_event(output_path, event_dict_for_render)
 
         # 10. TUI / dashboard callback
         if self._on_event_processed:
             try:
-                self._on_event_processed(event_dict)
+                self._on_event_processed(event_dict_for_render)
             except Exception:
                 logger.debug("_on_event_processed callback error", exc_info=True)
 
