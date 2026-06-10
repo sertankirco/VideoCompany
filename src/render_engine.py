@@ -389,9 +389,16 @@ class RenderEngine:
                 output_path = mixed
                 logger.info("Sound design applied → %s", output_path)
 
-        # 9. Publisher entegrasyonu (watchdog dinliyor, sadece event'i kaydet)
+        # 9. Publisher — ses tasarımı yoksa _final.mp4 olarak yeniden adlandır,
+        #    ardından doğrudan yükle (watchdog'a gerek yok)
         if self._publisher:
+            if not output_path.endswith("_final.mp4"):
+                final_path = output_path.replace(".mp4", "_final.mp4")
+                os.rename(output_path, final_path)
+                output_path = final_path
             self._publisher.register_event(output_path, event_dict_for_render)
+            results = self._publisher.publish_sync(output_path)
+            logger.info("Publisher results: %s", results)
 
         # 10. TUI / dashboard callback
         if self._on_event_processed:
