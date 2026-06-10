@@ -250,12 +250,12 @@ class RenderEngine:
             if config.enable_sound_design
             else None
         )
-        self._publisher = None
+        self._publisher: Optional["PublisherBot"] = None
         if config.enable_publisher:
             from src.publisher import PublisherBot
             self._publisher = PublisherBot(output_dir=config.output_dir)
         self._on_event_processed: Optional[Callable] = None
-        self._ffmpeg_renderer = None
+        self._ffmpeg_renderer: Optional["FFmpegNativeRenderer"] = None
         if config.use_ffmpeg_native:
             from src.ffmpeg_renderer import FFmpegNativeRenderer, FFmpegRendererConfig
             self._ffmpeg_renderer = FFmpegNativeRenderer(FFmpegRendererConfig(

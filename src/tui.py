@@ -6,8 +6,11 @@ rich kütüphanesi yüklü değilse sessizce devre dışı kalır.
 """
 
 import json
+import logging
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -200,8 +203,8 @@ class SimulatorTUI:
                                 counts[p]["success"] += 1
                             elif s in ("error", "exception"):
                                 counts[p]["error"] += 1
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Upload log okunamadı: %s", exc)
 
         tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold magenta")
         tbl.add_column("Platform", style="cyan", no_wrap=True)

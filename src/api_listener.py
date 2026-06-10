@@ -72,15 +72,15 @@ class MatchAPIListener:
 
     def create_flask_app(self, output_dir: str = "output/"):
         """
-        Flask uygulaması oluşturur.
+        Tam özellikli Flask uygulaması oluşturur (webhook + dashboard).
+        Sadece dashboard gerektiğinde modül-seviye create_dashboard_app() kullanın.
 
         Endpoint'ler:
             GET  /          — Canlı dashboard (dashboard.html)
             GET  /health    — 200 OK
             GET  /stream    — SSE canlı event akışı
             GET  /api/stats — Upload istatistikleri (JSON)
-            GET  /jobs      — Son işlerin listesi
-            POST /event     — Maç eventi (JSON body)
+            POST /event     — Maç eventi (JSON body, opsiyonel HMAC imzalı)
         """
         try:
             from flask import Flask, request, jsonify, Response, stream_with_context, send_file

@@ -108,8 +108,6 @@ def generate_silhouette(
     sil_name = f"silhouette_{_slug(team) or 'default'}.png"
     if output_path:
         dest = output_path
-    elif cache_dir_arg := None:  # resolved below
-        dest = str(_DEFAULT_CACHE / sil_name)
     else:
         dest = str(_DEFAULT_CACHE / sil_name)
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
