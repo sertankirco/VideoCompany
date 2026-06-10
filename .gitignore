@@ -12,10 +12,8 @@ build/
 venv/
 env/
 
-# Output renders (can be large)
-output/*.mp4
-output/*.mov
-output/*.avi
+# Output renders and logs (generated at runtime)
+output/
 
 # Temp JSX scripts generated at runtime
 scripts/tmp_*.jsx
